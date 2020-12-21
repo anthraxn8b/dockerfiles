@@ -1,0 +1,46 @@
+FROM maven:3.5.2-jdk-8-alpine AS buildStage
+
+RUN apk update  \
+ && apk upgrade \
+ && apk add --no-cache git xmlstarlet
+
+WORKDIR /tmp/
+
+RUN git clone https://github.com/UniversalMediaServer/UniversalMediaServer.git .
+
+# WORKAROUND: Correct external dependency positioning...
+RUN xmlstarlet ed -L -N my=http://maven.apache.org/POM/4.0.0 \
+    --subnode "//my:dependencies/my:dependency[my:artifactId[./text()='cuelib']][my:groupId[./text()='jwbroek.cuelib']]" --type elem -n scope      -v "system" \
+    --subnode "//my:dependencies/my:dependency[my:artifactId[./text()='cuelib']][my:groupId[./text()='jwbroek.cuelib']]" --type elem -n systemPath -v "\${project.basedir}/src/main/external-resources/lib/cuelib-1.2.1-2008-06-13.jar" \
+    ./pom.xml
+
+# Define a volume for maven and execute the build steps...
+VOLUME /root/.m2
+RUN mvn external:install
+RUN mvn package -DskipTests -P linux-arm64
+
+
+FROM alpine
+
+RUN apk add --no-cache coreutils ffmpeg mediainfo openjdk8-jre
+
+VOLUME /media
+VOLUME /profile
+
+EXPOSE 9001 5002 1044
+
+ENV JVM_OPTS=-Xmx512M
+
+WORKDIR /usr/src/ums/
+
+COPY --from=buildStage /tmp/target/ums.jar .
+
+CMD java      \
+    $JVM_OPTS \
+    -XX:+UnlockExperimentalVMOptions \
+    -XX:+UseCGroupMemoryLimitForHeap \
+	-DUMS_PROFILE=/profile           \
+	-Dfile.encoding=UTF-8            \
+	-Djava.net.preferIPv4Stack=true  \
+	-Djna.nosys=true                 \
+	-cp ums.jar net.pms.PMS
